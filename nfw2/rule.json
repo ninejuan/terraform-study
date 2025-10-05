@@ -1,0 +1,117 @@
+{
+  "RulesSource": {
+    "RulesSourceList": {
+      "TargetTypes": ["HTTP_HOST", "TLS_SNI"],
+      "Targets": [
+        "ifconfig.io",
+        "*.ifconfig.io",
+        "ipinfo.io",
+        "checkip.amazonaws.com",
+        "icanhazip.com",
+        "whatismyipaddress.com"
+      ],
+      "GeneratedRulesType": "DENYLIST"
+    },
+    "StatefulRules": [
+      {
+        "Action": "DROP",
+        "Header": {
+          "Protocol": "HTTP",
+          "Source": "192.168.0.0/16",
+          "SourcePort": "ANY",
+          "Direction": "FORWARD",
+          "Destination": "ANY",
+          "DestinationPort": "80"
+        },
+        "RuleOptions": [
+          {
+            "Keyword": "msg",
+            "Settings": ["\"Block HTTP to IP check services\""]
+          },
+          {
+            "Keyword": "flow",
+            "Settings": ["to_server"]
+          },
+          {
+            "Keyword": "http.uri",
+            "Settings": []
+          },
+          {
+            "Keyword": "content",
+            "Settings": ["\"/json\""]
+          },
+          {
+            "Keyword": "sid",
+            "Settings": ["1000001"]
+          }
+        ]
+      },
+      {
+        "Action": "DROP",
+        "Header": {
+          "Protocol": "DNS",
+          "Source": "192.168.0.0/16",
+          "SourcePort": "ANY",
+          "Direction": "FORWARD",
+          "Destination": "ANY",
+          "DestinationPort": "53"
+        },
+        "RuleOptions": [
+          {
+            "Keyword": "msg",
+            "Settings": ["\"Block DNS for IP check services\""]
+          },
+          {
+            "Keyword": "dns.query",
+            "Settings": []
+          },
+          {
+            "Keyword": "content",
+            "Settings": ["\"ifconfig\""]
+          },
+          {
+            "Keyword": "nocase",
+            "Settings": []
+          },
+          {
+            "Keyword": "sid",
+            "Settings": ["1000002"]
+          }
+        ]
+      },
+      {
+        "Action": "DROP",
+        "Header": {
+          "Protocol": "HTTP",
+          "Source": "192.168.0.0/16",
+          "SourcePort": "ANY",
+          "Direction": "FORWARD",
+          "Destination": "ANY",
+          "DestinationPort": "ANY"
+        },
+        "RuleOptions": [
+          {
+            "Keyword": "msg",
+            "Settings": ["\"Block curl requests to IP services\""]
+          },
+          {
+            "Keyword": "flow",
+            "Settings": ["to_server"]
+          },
+          {
+            "Keyword": "http.user_agent",
+            "Settings": []
+          },
+          {
+            "Keyword": "content",
+            "Settings": ["\"curl/\""]
+          },
+          {
+            "Keyword": "sid",
+            "Settings": ["1000003"]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,370 @@
+############################################
+# Provider & Globals
+############################################
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.50"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.region
+}
+
+variable "region" {
+  description = "AWS region"
+  type        = string
+  default     = "ap-northeast-2"
+}
+
+locals {
+  hub_vpc_cidr = "10.0.0.0/16"
+  app_vpc_cidr = "192.168.0.0/16"
+}
+
+############################################
+# VPCs
+############################################
+resource "aws_vpc" "hub" {
+  cidr_block           = local.hub_vpc_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags = { Name = "gj2025-hub-vpc" }
+}
+
+resource "aws_vpc" "app" {
+  cidr_block           = local.app_vpc_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags = { Name = "gj2025-app-vpc" }
+}
+
+############################################
+# Subnets (Hub)
+############################################
+resource "aws_subnet" "hub_pub_a" {
+  vpc_id                  = aws_vpc.hub.id
+  cidr_block              = "10.0.0.0/24"
+  availability_zone       = "${var.region}a"
+  map_public_ip_on_launch = true
+  tags = { Name = "gj2025-hub-public-subnet-a" }
+}
+
+resource "aws_subnet" "hub_pub_b" {
+  vpc_id                  = aws_vpc.hub.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "${var.region}b"
+  map_public_ip_on_launch = true
+  tags = { Name = "gj2025-hub-public-subnet-b" }
+}
+
+resource "aws_subnet" "hub_priv_a" {
+  vpc_id            = aws_vpc.hub.id
+  cidr_block        = "10.0.2.0/24"
+  availability_zone = "${var.region}a"
+  tags = { Name = "gj2025-hub-private-subnet-a" }
+}
+
+resource "aws_subnet" "hub_priv_b" {
+  vpc_id            = aws_vpc.hub.id
+  cidr_block        = "10.0.3.0/24"
+  availability_zone = "${var.region}b"
+  tags = { Name = "gj2025-hub-private-subnet-b" }
+}
+
+resource "aws_subnet" "hub_fw" {
+  vpc_id            = aws_vpc.hub.id
+  cidr_block        = "10.0.4.0/24"
+  availability_zone = "${var.region}a"
+  tags = { Name = "gj2025-hub-firewall-subnet" }
+}
+
+# Additional Firewall subnet in AZ-b for per-AZ endpoint steering
+resource "aws_subnet" "hub_fw_b" {
+  vpc_id            = aws_vpc.hub.id
+  cidr_block        = "10.0.5.0/24"
+  availability_zone = "${var.region}b"
+  tags = { Name = "gj2025-hub-firewall-subnet-b" }
+}
+
+############################################
+# Subnets (App)
+############################################
+resource "aws_subnet" "app_priv_a" {
+  vpc_id            = aws_vpc.app.id
+  cidr_block        = "192.168.0.0/24"
+  availability_zone = "${var.region}a"
+  tags = { Name = "gj2025-app-private-subnet-a" }
+}
+
+resource "aws_subnet" "app_priv_b" {
+  vpc_id            = aws_vpc.app.id
+  cidr_block        = "192.168.1.0/24"
+  availability_zone = "${var.region}b"
+  tags = { Name = "gj2025-app-private-subnet-b" }
+}
+
+resource "aws_subnet" "app_data_a" {
+  vpc_id            = aws_vpc.app.id
+  cidr_block        = "192.168.2.0/24"
+  availability_zone = "${var.region}a"
+  tags = { Name = "gj2025-app-data-subnet-a" }
+}
+
+resource "aws_subnet" "app_data_b" {
+  vpc_id            = aws_vpc.app.id
+  cidr_block        = "192.168.3.0/24"
+  availability_zone = "${var.region}b"
+  tags = { Name = "gj2025-app-data-subnet-b" }
+}
+
+############################################
+# IGW (Hub)
+############################################
+resource "aws_internet_gateway" "hub" {
+  vpc_id = aws_vpc.hub.id
+  tags   = { Name = "gj2025-hub-igw" }
+}
+
+############################################
+# NAT GW (Hub, public AZ-a)
+############################################
+resource "aws_eip" "hub_nat_eip" {
+  domain = "vpc"
+  tags   = { Name = "gj2025-hub-nat-eip" }
+}
+
+resource "aws_nat_gateway" "hub" {
+  allocation_id = aws_eip.hub_nat_eip.id
+  subnet_id     = aws_subnet.hub_pub_a.id
+  tags          = { Name = "gj2025-hub-ngw" }
+  depends_on    = [aws_internet_gateway.hub]
+}
+
+############################################
+# Route Tables (Hub)
+############################################
+# Public RTB: 0.0.0.0/0 -> IGW
+resource "aws_route_table" "hub_public" {
+  vpc_id = aws_vpc.hub.id
+  tags   = { Name = "gj2025-hub-public-rtb" }
+}
+
+resource "aws_route" "hub_public_default" {
+  route_table_id         = aws_route_table.hub_public.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.hub.id
+}
+
+resource "aws_route" "hub_public_to_app_tgw" {
+  route_table_id         = aws_route_table.hub_public.id
+  destination_cidr_block = local.app_vpc_cidr
+  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
+}
+
+resource "aws_route_table_association" "hub_pub_a_assoc" {
+  route_table_id = aws_route_table.hub_public.id
+  subnet_id      = aws_subnet.hub_pub_a.id
+}
+
+resource "aws_route_table_association" "hub_pub_b_assoc" {
+  route_table_id = aws_route_table.hub_public.id
+  subnet_id      = aws_subnet.hub_pub_b.id
+}
+
+# Private RTB A/B: default -> TGW
+resource "aws_route_table" "hub_private_a" {
+  vpc_id = aws_vpc.hub.id
+  tags   = { Name = "gj2025-hub-private-rtb-a" }
+}
+
+resource "aws_route_table" "hub_private_b" {
+  vpc_id = aws_vpc.hub.id
+  tags   = { Name = "gj2025-hub-private-rtb-b" }
+}
+
+resource "aws_route_table_association" "hub_priv_a_assoc" {
+  route_table_id = aws_route_table.hub_private_a.id
+  subnet_id      = aws_subnet.hub_priv_a.id
+}
+
+resource "aws_route_table_association" "hub_priv_b_assoc" {
+  route_table_id = aws_route_table.hub_private_b.id
+  subnet_id      = aws_subnet.hub_priv_b.id
+}
+
+# Firewall RTB: 0.0.0.0/0 -> NAT GW, App CIDR -> TGW
+resource "aws_route_table" "hub_firewall" {
+  vpc_id = aws_vpc.hub.id
+  tags   = { Name = "gj2025-hub-firewall-rtb" }
+}
+
+resource "aws_route" "hub_firewall_default_to_nat" {
+  route_table_id         = aws_route_table.hub_firewall.id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.hub.id
+}
+
+resource "aws_route_table_association" "hub_fw_assoc" {
+  route_table_id = aws_route_table.hub_firewall.id
+  subnet_id      = aws_subnet.hub_fw.id
+}
+
+resource "aws_route_table_association" "hub_fw_b_assoc" {
+  route_table_id = aws_route_table.hub_firewall.id
+  subnet_id      = aws_subnet.hub_fw_b.id
+}
+
+############################################
+# Transit Gateway
+############################################
+resource "aws_ec2_transit_gateway" "tgw" {
+  description = "gj2025-tgw"
+  tags       = { Name = "gj2025-tgw" }
+  default_route_table_association = "disable"
+  default_route_table_propagation = "disable"
+}
+
+# TGW Route Tables
+resource "aws_ec2_transit_gateway_route_table" "hub" {
+  transit_gateway_id = aws_ec2_transit_gateway.tgw.id
+  tags               = { Name = "gj2025-hub-tgw-rtb" }
+}
+
+resource "aws_ec2_transit_gateway_route_table" "app" {
+  transit_gateway_id = aws_ec2_transit_gateway.tgw.id
+  tags               = { Name = "gj2025-app-tgw-rtb" }
+}
+
+# Attachments
+resource "aws_ec2_transit_gateway_vpc_attachment" "hub" {
+  subnet_ids         = [aws_subnet.hub_fw.id, aws_subnet.hub_fw_b.id]
+  transit_gateway_id = aws_ec2_transit_gateway.tgw.id
+  vpc_id             = aws_vpc.hub.id
+  tags               = { Name = "gj2025-hub-tgw-attach" }
+  appliance_mode_support = "enable"
+}
+
+resource "aws_ec2_transit_gateway_vpc_attachment" "app" {
+  subnet_ids         = [aws_subnet.app_priv_a.id, aws_subnet.app_priv_b.id]
+  transit_gateway_id = aws_ec2_transit_gateway.tgw.id
+  vpc_id             = aws_vpc.app.id
+  tags               = { Name = "gj2025-app-tgw-attach" }
+  appliance_mode_support = "enable"
+}
+
+# Associate attachments to TGW RTBs
+resource "aws_ec2_transit_gateway_route_table_association" "assoc_hub" {
+  transit_gateway_attachment_id  = aws_ec2_transit_gateway_vpc_attachment.hub.id
+  transit_gateway_route_table_id = aws_ec2_transit_gateway_route_table.hub.id
+  replace_existing_association   = true
+}
+
+resource "aws_ec2_transit_gateway_route_table_association" "assoc_app" {
+  transit_gateway_attachment_id  = aws_ec2_transit_gateway_vpc_attachment.app.id
+  transit_gateway_route_table_id = aws_ec2_transit_gateway_route_table.app.id
+  replace_existing_association   = true
+}
+
+# TGW Routes
+# App RTB: 0.0.0.0/0 -> Hub attachment (send all egress toward Hub)
+resource "aws_ec2_transit_gateway_route" "app_default_to_hub" {
+  destination_cidr_block         = "0.0.0.0/0"
+  transit_gateway_route_table_id = aws_ec2_transit_gateway_route_table.app.id
+  transit_gateway_attachment_id  = aws_ec2_transit_gateway_vpc_attachment.hub.id
+}
+
+# Hub RTB: 192.168.0.0/16 -> App attachment (return path)
+resource "aws_ec2_transit_gateway_route" "hub_to_app" {
+  destination_cidr_block         = local.app_vpc_cidr
+  transit_gateway_route_table_id = aws_ec2_transit_gateway_route_table.hub.id
+  transit_gateway_attachment_id  = aws_ec2_transit_gateway_vpc_attachment.app.id
+}
+
+# Hub RTB: 0.0.0.0/0 -> Hub attachment (internet traffic)
+resource "aws_ec2_transit_gateway_route" "hub_to_internet" {
+  destination_cidr_block         = "0.0.0.0/0"
+  transit_gateway_route_table_id = aws_ec2_transit_gateway_route_table.hub.id
+  transit_gateway_attachment_id  = aws_ec2_transit_gateway_vpc_attachment.hub.id
+}
+
+############################################
+# Add TGW routes into VPC route tables that need it
+############################################
+# Hub private RTBs default -> Firewall, App CIDR -> TGW
+resource "aws_route" "hub_priv_a_app_to_tgw" {
+  route_table_id         = aws_route_table.hub_private_a.id
+  destination_cidr_block = local.app_vpc_cidr
+  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
+}
+
+resource "aws_route" "hub_priv_b_app_to_tgw" {
+  route_table_id         = aws_route_table.hub_private_b.id
+  destination_cidr_block = local.app_vpc_cidr
+  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
+}
+
+# Firewall RTB: App CIDR -> TGW (return to App after inspection)
+resource "aws_route" "hub_firewall_to_app_tgw" {
+  route_table_id         = aws_route_table.hub_firewall.id
+  destination_cidr_block = local.app_vpc_cidr
+  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
+}
+
+# App private RTBs default -> TGW (egress hairpin to Hub)
+resource "aws_route_table" "app_private_a" {
+  vpc_id = aws_vpc.app.id
+  tags   = { Name = "gj2025-app-private-rtb-a" }
+}
+
+resource "aws_route_table" "app_private_b" {
+  vpc_id = aws_vpc.app.id
+  tags   = { Name = "gj2025-app-private-rtb-b" }
+}
+
+resource "aws_route_table_association" "app_priv_a_assoc" {
+  route_table_id = aws_route_table.app_private_a.id
+  subnet_id      = aws_subnet.app_priv_a.id
+}
+
+resource "aws_route_table_association" "app_priv_b_assoc" {
+  route_table_id = aws_route_table.app_private_b.id
+  subnet_id      = aws_subnet.app_priv_b.id
+}
+
+resource "aws_route" "app_priv_a_default_tgw" {
+  route_table_id         = aws_route_table.app_private_a.id
+  destination_cidr_block = "0.0.0.0/0"
+  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
+}
+
+resource "aws_route" "app_priv_b_default_tgw" {
+  route_table_id         = aws_route_table.app_private_b.id
+  destination_cidr_block = "0.0.0.0/0"
+  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
+}
+
+# App data RTBs (no internet route)
+resource "aws_route_table" "app_data_a" {
+  vpc_id = aws_vpc.app.id
+  tags   = { Name = "gj2025-app-data-rtb-a" }
+}
+
+resource "aws_route_table" "app_data_b" {
+  vpc_id = aws_vpc.app.id
+  tags   = { Name = "gj2025-app-data-rtb-b" }
+}
+
+resource "aws_route_table_association" "app_data_a_assoc" {
+  route_table_id = aws_route_table.app_data_a.id
+  subnet_id      = aws_subnet.app_data_a.id
+}
+
+resource "aws_route_table_association" "app_data_b_assoc" {
+  route_table_id = aws_route_table.app_data_b.id
+  subnet_id      = aws_subnet.app_data_b.id
+}
